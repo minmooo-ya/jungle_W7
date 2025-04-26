@@ -185,16 +185,24 @@ int mm_init(void)
     free_listp = bp;
     return 0;
 }
-static void *find_fit(size_t asize)
-{
+static void *find_fit(size_t asize) {
     void *bp;
+    void *best_bp = NULL;
+    size_t best_size = (size_t)-1; // 초기 최대값
 
+    // free list 순회
     for (bp = free_listp; bp != NULL; bp = SUCC(bp)) {
-        if (GET_SIZE(HDRP(bp)) >= asize) {
-            return bp;
+        size_t bsize = GET_SIZE(HDRP(bp));
+        if (bsize >= asize) {
+            if (bsize < best_size) {
+                best_size = bsize;
+                best_bp = bp;
+                if (bsize == asize) break; // 완벽한 fit 발견하면 바로 종료
+            }
         }
     }
-    return NULL;
+
+    return best_bp;
 }
 // 주어진 위치에 메모리를 배치 (필요 시 분할)
 void place(void *bp, size_t asize)
