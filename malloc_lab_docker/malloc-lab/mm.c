@@ -39,6 +39,7 @@
 
 #define NEXT_BLKP(bp) ((char *)(bp) + GET_SIZE(((char *)(bp) - WSIZE)))
 #define PREV_BLKP(bp) ((char *)(bp) - GET_SIZE(((char *)(bp) - DSIZE)))
+
 /*********************************************************
  * NOTE TO STUDENTS: Before you do anything else, please
  * provide your team information in the following struct.
@@ -64,6 +65,7 @@ team_t team = {
 #define SIZE_T_SIZE (ALIGN(sizeof(size_t)))
 
 static char *heap_listp = 0;
+static char *last_bp;
 static void *extend_heap(size_t words);
 static void *find_fit(size_t asize);
 static void place(void *bp, size_t asize);
@@ -82,9 +84,13 @@ int mm_init(void)
     PUT(heap_listp + (2 * WSIZE), PACK(DSIZE, 1));
     PUT(heap_listp + (3 * WSIZE), PACK(0, 1));
     heap_listp += (2 * WSIZE);
+    last_bp = heap_listp;
 
     if(extend_heap(CHUNKSIZE / WSIZE) == NULL)
         return -1;
+    if (extend_heap(4) == NULL)   // 자주 사용되는 작은 블럭이 잘 처리되어 점수가 오름
+        return -1;
+
     return 0;
 }
 
@@ -123,6 +129,7 @@ void *mm_malloc(size_t size)
 
     if((bp = find_fit(asize)) != NULL){
         place(bp, asize);
+        last_bp = bp;
         return bp;
     }
 
@@ -130,39 +137,34 @@ void *mm_malloc(size_t size)
     if((bp = extend_heap(extendsize/WSIZE)) == NULL)
         return NULL;
     place(bp, asize);
+    last_bp = bp;
     return bp;
 }
 
-// static void *find_fit(size_t asize)
-// {
-//     void *bp;
-
-//     for(bp = heap_listp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)){
-//         if(!GET_ALLOC(HDRP(bp)) && (asize <= GET_SIZE(HDRP(bp)))){
-//             return bp;
-//         }
-//     }
-//     return NULL;
-// }
-/* find_fit: 적당한 크기의 가용 블록 탐색 */
 
 static void *find_fit(size_t asize)
 {
-    void *best_bp = NULL;           // 가장 적합한 블록 포인터
-    size_t best_size = (size_t)-1;  // 초기값: 가능한 최대값
+    char *bp = last_bp;
 
-    for (void *bp = heap_listp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)) {
-        size_t bsize = GET_SIZE(HDRP(bp));
-
-        if (!GET_ALLOC(HDRP(bp)) && asize <= bsize) {
-            if ((bsize - asize) < (best_size - asize)) {
-                best_size = bsize;
-                best_bp = bp;
-            }
+    for(bp = NEXT_BLKP(bp); GET_SIZE(HDRP(bp)) != 0; bp = NEXT_BLKP(bp)){
+        if(!GET_ALLOC(HDRP(bp)) && (asize <= GET_SIZE(HDRP(bp)))){
+            last_bp = bp;
+            return bp;
         }
     }
-    return best_bp;  // NULL이거나 가장 잘 맞는 블록
+    bp = heap_listp;
+    while (bp < last_bp) {
+        bp = NEXT_BLKP(bp);
+        if (!GET_ALLOC(HDRP(bp)) && GET_SIZE(HDRP(bp)) >= asize) {
+            last_bp = bp;
+            return bp;
+        }
+    }
+
+
+    return NULL;
 }
+
 
 static void place(void *bp, size_t asize)
 {
@@ -199,6 +201,7 @@ static void *coalesce(void *bp)
     size_t size = GET_SIZE(HDRP(bp));
 
     if(prev_alloc && next_alloc){
+        last_bp = bp;
         return bp;
     }
     else if(prev_alloc && !next_alloc){
@@ -214,30 +217,61 @@ static void *coalesce(void *bp)
     }
     else {
         size += GET_SIZE(HDRP(PREV_BLKP(bp))) +
-            GET_SIZE(FTRP(NEXT_BLKP(bp)));
+            GET_SIZE(HDRP(NEXT_BLKP(bp)));
         PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
         PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0));
         bp = PREV_BLKP(bp);
     }
+   
+    last_bp = bp;
     return bp;
 }
 
 /*
  * mm_realloc - Implemented simply in terms of mm_malloc and mm_free
  */
-void *mm_realloc(void *ptr, size_t size)
-{
-    void *oldptr = ptr;
-    void *newptr;
-    size_t copySize;
+// void *mm_realloc(void *ptr, size_t size)
+// {
+//     void *oldptr = ptr;
+//     void *newptr;
+//     size_t copySize;
     
-    newptr = mm_malloc(size);
-    if (newptr == NULL)
-      return NULL;
-    copySize = *(size_t *)((char *)oldptr - SIZE_T_SIZE);
-    if (size < copySize)
-      copySize = size;
-    memcpy(newptr, oldptr, copySize);
-    mm_free(oldptr);
-    return newptr;
+//     newptr = mm_malloc(size);
+//     if (newptr == NULL)
+//       return NULL;
+//     copySize = GET_SIZE(HDRP(oldptr)) - DSIZE;
+//     if (size < copySize)
+//       copySize = size;
+//     memmove(newptr, oldptr, copySize); // memcpy -> memmove로 변경!
+//     mm_free(oldptr);
+//     return newptr;
+// }
+void *mm_realloc(void *bp, size_t size) {
+    size_t old_size = GET_SIZE(HDRP(bp));
+    size_t new_size = size + (2 * WSIZE);   // 2*WISE는 헤더와 풋터
+
+    // new_size가 old_size보다 작거나 같으면 기존 bp 그대로 사용
+    if (new_size <= old_size) {
+        return bp;
+    }
+    // new_size가 old_size보다 크면 사이즈 변경
+    else {
+        size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
+        size_t current_size = old_size + GET_SIZE(HDRP(NEXT_BLKP(bp)));
+
+        // next block이 가용상태이고 old, next block의 사이즈 합이 new_size보다 크면 그냥 그거 바로 합쳐서 쓰기
+        if (!next_alloc && current_size >= new_size) {
+            PUT(HDRP(bp), PACK(current_size, 1));
+            PUT(FTRP(bp), PACK(current_size, 1));
+            return bp;
+        }
+        // 아니면 새로 block 만들어서 거기로 옮기기
+        else {
+            void *new_bp = mm_malloc(new_size);
+            place(new_bp, new_size);
+            memcpy(new_bp, bp, new_size);  // 메모리의 특정한 부분으로부터 얼마까지의 부분을 다른 메모리 영역으로 복사해주는 함수(old_bp로부터 new_size만큼의 문자를 new_bp로 복사해라!)
+            mm_free(bp);
+            return new_bp;
+        }
+    }
 }
