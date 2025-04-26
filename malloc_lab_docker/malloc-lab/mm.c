@@ -63,6 +63,7 @@ static void remove_node(void *bp);
 
 void *heap_listp;   // 항상 heap의 첫 payload를 가리키는 포인터 (heap base)
 static char *free_listp = NULL;  // 명시적 가용 리스트의 헤드 포인터
+static void *last_bp = NULL;
 
 static void insert_node(void *bp) {
     if (bp == NULL) return;
@@ -80,6 +81,9 @@ static void insert_node(void *bp) {
 }
 
 static void remove_node(void *bp) {
+    if (bp == last_bp) {
+        last_bp = SUCC(bp); // 다음 free block으로 옮기기
+    }
     if (PRED(bp)) {
         SUCC(PRED(bp)) = SUCC(bp);
     }
@@ -183,26 +187,31 @@ int mm_init(void)
 
     bp = coalesce(bp);
     free_listp = bp;
+    last_bp = free_listp;
     return 0;
 }
 static void *find_fit(size_t asize) {
-    void *bp;
-    void *best_bp = NULL;
-    size_t best_size = (size_t)-1; // 초기 최대값
+    void *bp = last_bp ? SUCC(last_bp) : free_listp; // last_bp 다음부터 시작
+    void *start = bp; // 처음 시작점 기억
 
-    // free list 순회
-    for (bp = free_listp; bp != NULL; bp = SUCC(bp)) {
-        size_t bsize = GET_SIZE(HDRP(bp));
-        if (bsize >= asize) {
-            if (bsize < best_size) {
-                best_size = bsize;
-                best_bp = bp;
-                if (bsize == asize) break; // 완벽한 fit 발견하면 바로 종료
-            }
+    // 첫 번째 탐색: last_bp 이후부터 끝까지
+    for (; bp != NULL; bp = SUCC(bp)) {
+        if (GET_SIZE(HDRP(bp)) >= asize) {
+            last_bp = bp; // last_bp 갱신
+            return bp;
         }
     }
 
-    return best_bp;
+    // 두 번째 탐색: 리스트의 처음부터 last_bp까지
+    for (bp = free_listp; bp != start; bp = SUCC(bp)) {
+        if (GET_SIZE(HDRP(bp)) >= asize) {
+            last_bp = bp; // last_bp 갱신
+            return bp;
+        }
+    }
+
+    // 못 찾으면 NULL
+    return NULL;
 }
 // 주어진 위치에 메모리를 배치 (필요 시 분할)
 void place(void *bp, size_t asize)
