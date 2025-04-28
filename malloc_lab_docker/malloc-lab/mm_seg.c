@@ -154,7 +154,6 @@ static void *extend_heap(size_t words)
     PUT(HDRP(NEXT_BLKP(bp)), PACK(0, 1));
     return coalesce(bp);
 }
-
 int mm_init(void)
 {
     //  1. 힙을 위한 최소 공간 16바이트 확보 (padding + prologue header/footer + epilogue header)
@@ -183,7 +182,6 @@ int mm_init(void)
 
     return 0;
 }
-
 static void *find_fit(size_t asize) {
     for (int i = find_size_class(asize); i < NUM_CLASSES; i++) {
         void *bp = segregated_free_lists[i];
@@ -260,7 +258,6 @@ void mm_free(void *ptr)
     PUT(FTRP(ptr), PACK(size, 0));
     coalesce(ptr);
 }
-
 /* mm_realloc - in-place 최적화 */
 void *mm_realloc(void *ptr, size_t size)
 {
