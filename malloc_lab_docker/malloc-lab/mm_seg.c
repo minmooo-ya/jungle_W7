@@ -53,7 +53,7 @@ team_t team = {
     "minhyay01@gmail.com"};
 
 #define ALIGNMENT 16
-#define NUM_CLASSES 8
+#define NUM_CLASSES 10
 
 #define ALIGN(size) (((size) + (ALIGNMENT-1)) & ~0xF)
 #define SIZE_T_SIZE (ALIGN(sizeof(size_t)))
@@ -70,15 +70,42 @@ static void *segregated_free_lists[NUM_CLASSES];
 
 // find size class
 static int find_size_class(size_t size) {
-    if (size <= 16) return 0;
-    else if (size <= 32) return 1;
-    else if (size <= 64) return 2;
-    else if (size <= 128) return 3;
-    else if (size <= 256) return 4;
-    else if (size <= 512) return 5;
-    else if (size <= 1024) return 6;
-    else return 7;
+    if (size <= 9) return 0;
+    else if (size <= 16) return 1;
+    else if (size <= 32) return 2;
+    else if (size <= 64) return 3;
+    else if (size <= 128) return 4;
+    else if (size <= 256) return 5;
+    else if (size <= 512) return 6;
+    else if (size <= 1024) return 7;
+    else if (size <= 2048) return 8;
+    else return 9;
 }
+
+// static void insert_node(void *bp) {
+//     int class_idx = find_size_class(GET_SIZE(HDRP(bp)));
+//     void *cur = segregated_free_lists[class_idx];
+//     void *prev = NULL;
+
+//     while (cur != NULL && GET_SIZE(HDRP(cur)) < GET_SIZE(HDRP(bp))) {
+//         prev = cur;
+//         cur = SUCC(cur);
+//     }
+
+//     if (prev == NULL) {
+//         // 맨 앞에 삽입
+//         segregated_free_lists[class_idx] = bp;
+//         PRED(bp) = NULL;
+//     } else {
+//         SUCC(prev) = bp;
+//         PRED(bp) = prev;
+//     }
+
+//     if (cur != NULL) {
+//         PRED(cur) = bp;
+//     }
+//     SUCC(bp) = cur;
+// }
 
 static void insert_node(void *bp) {
     int class_idx = find_size_class(GET_SIZE(HDRP(bp)));
@@ -102,8 +129,6 @@ static void remove_node(void *bp) {
     if (SUCC(bp))
         PRED(SUCC(bp)) = PRED(bp);
 }
-
-
 
 // coalesce
 static void *coalesce(void *bp) {
@@ -154,6 +179,7 @@ static void *extend_heap(size_t words)
     PUT(HDRP(NEXT_BLKP(bp)), PACK(0, 1));
     return coalesce(bp);
 }
+
 int mm_init(void)
 {
     //  1. 힙을 위한 최소 공간 16바이트 확보 (padding + prologue header/footer + epilogue header)
@@ -182,6 +208,7 @@ int mm_init(void)
 
     return 0;
 }
+
 static void *find_fit(size_t asize) {
     for (int i = find_size_class(asize); i < NUM_CLASSES; i++) {
         void *bp = segregated_free_lists[i];
@@ -258,6 +285,7 @@ void mm_free(void *ptr)
     PUT(FTRP(ptr), PACK(size, 0));
     coalesce(ptr);
 }
+
 /* mm_realloc - in-place 최적화 */
 void *mm_realloc(void *ptr, size_t size)
 {

@@ -1,4 +1,6 @@
 #include <stdio.h>
+#include <math.h>
+
 
 extern int mm_init (void);
 extern void *mm_malloc (size_t size);

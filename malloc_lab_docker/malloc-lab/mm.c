@@ -11,7 +11,7 @@
 
 #define WSIZE 8             // Word size (8 bytes)
 #define DSIZE 16            // Double word size (16 bytes)
-#define CHUNKSIZE (1<<12)   // Heap 확장 단위 (그대로 두어도 OK)
+#define CHUNKSIZE (1<<12)   // Heap 확장 단위
 
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
 
@@ -53,7 +53,7 @@ team_t team = {
     "minhyay01@gmail.com"};
 
 #define ALIGNMENT 16
-#define NUM_CLASSES 8
+#define NUM_CLASSES 20
 
 #define ALIGN(size) (((size) + (ALIGNMENT-1)) & ~0xF)
 #define SIZE_T_SIZE (ALIGN(sizeof(size_t)))
@@ -70,25 +70,52 @@ static void *segregated_free_lists[NUM_CLASSES];
 
 // find size class
 static int find_size_class(size_t size) {
-    if (size <= 16) return 0;
-    else if (size <= 32) return 1;
-    else if (size <= 64) return 2;
-    else if (size <= 128) return 3;
-    else if (size <= 256) return 4;
-    else if (size <= 512) return 5;
-    else if (size <= 1024) return 6;
-    else return 7;
+    if (size <= 32) return 0;
+    else if (size <= 64) return 1;
+    else if (size <= 128) return 2;
+    else if (size <= 256) return 3;
+    else if (size <= 512) return 4;
+    else if (size <= 1024) return 5;
+    else if (size <= 2048) return 6;
+    else if (size <= 4096) return 7;
+    else if (size <= 8192) return 8;
+    else return 9;
 }
-
+//정렬 ver
 static void insert_node(void *bp) {
     int class_idx = find_size_class(GET_SIZE(HDRP(bp)));
-    
-    SUCC(bp) = segregated_free_lists[class_idx];
-    PRED(bp) = NULL;
-    if (segregated_free_lists[class_idx] != NULL)
-        PRED(segregated_free_lists[class_idx]) = bp;
-    segregated_free_lists[class_idx] = bp;
+    void *cur = segregated_free_lists[class_idx];
+    void *prev = NULL;
+
+    while (cur != NULL && GET_SIZE(HDRP(cur)) < GET_SIZE(HDRP(bp))) {
+        prev = cur;
+        cur = SUCC(cur);
+    }
+
+    if (prev == NULL) {
+        // 맨 앞에 삽입
+        segregated_free_lists[class_idx] = bp;
+        PRED(bp) = NULL;
+    } else {
+        SUCC(prev) = bp;
+        PRED(bp) = prev;
+    }
+
+    if (cur != NULL) {
+        PRED(cur) = bp;
+    }
+    SUCC(bp) = cur;
 }
+
+// static void insert_node(void *bp) {
+//     int class_idx = find_size_class(GET_SIZE(HDRP(bp)));
+    
+//     SUCC(bp) = segregated_free_lists[class_idx];
+//     PRED(bp) = NULL;
+//     if (segregated_free_lists[class_idx] != NULL)
+//         PRED(segregated_free_lists[class_idx]) = bp;
+//     segregated_free_lists[class_idx] = bp;
+// }
 
 // remove node
 static void remove_node(void *bp) {
@@ -107,8 +134,13 @@ static void remove_node(void *bp) {
 
 // coalesce
 static void *coalesce(void *bp) {
-    bool prev_alloc = (PREV_BLKP(bp) < (void *)mem_heap_lo()) || GET_ALLOC(HDRP(PREV_BLKP(bp)));
-    bool next_alloc = (NEXT_BLKP(bp) > (void *)mem_heap_hi()) || GET_ALLOC(HDRP(NEXT_BLKP(bp)));
+    bool prev_alloc = GET_ALLOC(HDRP(PREV_BLKP(bp)));
+    bool next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
+    
+    // 만약 현재 bp 바로 다음 블록이 epilogue라면, next_alloc은 당연히 1 (할당된 상태)
+    if (HDRP(NEXT_BLKP(bp)) >= (char *)mem_heap_hi()) {
+        next_alloc = 1;
+    }
     size_t size = GET_SIZE(HDRP(bp));
 
     if (prev_alloc && next_alloc) {
@@ -184,14 +216,38 @@ int mm_init(void)
     return 0;
 }
 
+// static void *find_fit(size_t asize) {
+//     for (int i = find_size_class(asize); i < NUM_CLASSES; i++) {
+//         void *bp = segregated_free_lists[i];
+//         while (bp != NULL) {
+//             if (GET_SIZE(HDRP(bp)) >= asize)
+//                 return bp;
+//             bp = SUCC(bp);
+//         }
+//     }
+//     return NULL;
+// }
+
 static void *find_fit(size_t asize) {
     for (int i = find_size_class(asize); i < NUM_CLASSES; i++) {
         void *bp = segregated_free_lists[i];
+        void *best_bp = NULL;
+        size_t best_size = (size_t)-1;
+
         while (bp != NULL) {
-            if (GET_SIZE(HDRP(bp)) >= asize)
-                return bp;
+            size_t bsize = GET_SIZE(HDRP(bp));
+            if (bsize >= asize) {
+                if (bsize == asize)
+                    return bp; // 완벽한 fit이면 바로 리턴
+                if (bsize < best_size) {
+                    best_size = bsize;
+                    best_bp = bp;
+                }
+            }
             bp = SUCC(bp);
         }
+        if (best_bp != NULL)
+            return best_bp;
     }
     return NULL;
 }
@@ -274,9 +330,11 @@ void *mm_realloc(void *ptr, size_t size)
     size_t oldsize = GET_SIZE(HDRP(ptr));
     size_t asize = (size <= DSIZE) ? (2 * DSIZE) : DSIZE * ((size + (DSIZE) + (DSIZE-1)) / DSIZE);
 
+    // if (asize <= oldsize)
+    //     return ptr;
     if (asize <= oldsize)
         return ptr;
-
+    
     void *next = NEXT_BLKP(ptr);
     if (!GET_ALLOC(HDRP(next)) && (oldsize + GET_SIZE(HDRP(next))) >= asize) {
         remove_node(next);
