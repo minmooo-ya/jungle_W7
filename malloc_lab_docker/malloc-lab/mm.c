@@ -9,33 +9,57 @@
 #include "mm.h"
 #include "memlib.h"
 
-#define WSIZE 8             // Word size (8 bytes)
-#define DSIZE 16            // Double word size (16 bytes)
-#define CHUNKSIZE (1<<12)   // Heap 확장 단위
+// 기본 상수 정의
+#define WSIZE 8             // Word size: 8 bytes (header, footer 크기)
+#define DSIZE 16            // Double word size: 16 bytes (최소 블록 크기)
+#define CHUNKSIZE (1 << 12) // 초기 및 힙 확장 시 요청하는 크기: 4KB (2^12)
 
-#define MAX(x, y) ((x) > (y) ? (x) : (y))
+#define MAX(x, y) ((x) > (y) ? (x) : (y)) // 두 값 중 더 큰 값을 반환
 
-// Pack a size and allocated bit into a word
+// 블록의 크기(size)와 할당 여부(alloc bit)를 하나의 word에 패킹
 #define PACK(size, alloc) ((size) | (alloc))
 
-// Read and write a word at address p
+// 메모리 p가 가리키는 위치에서 8바이트 읽기
 #define GET(p) (*(unsigned long *)(p))  
+
+// 메모리 p가 가리키는 위치에 8바이트 값 쓰기
 #define PUT(p, val) (*(unsigned long *)(p) = (val))
 
-// Read the size and allocated fields from address p
-#define GET_SIZE(p) (GET(p) & ~(size_t)0xF) // 0xF로 하자 (하위 4비트 사용)
+// 포인터 p로부터 size(상위 비트들) 추출 (하위 4비트는 무시)
+#define GET_SIZE(p) (GET(p) & ~(size_t)0xF) 
+
+// 포인터 p로부터 할당 상태(하위 1비트) 추출
 #define GET_ALLOC(p) (GET(p) & 0x1)
 
-// Given block ptr bp, compute address of its header and footer
+// 블록 포인터 bp로부터 header 주소 계산
 #define HDRP(bp) ((char *)(bp) - WSIZE)
+
+// 블록 포인터 bp로부터 footer 주소 계산
 #define FTRP(bp) ((char *)(bp) + GET_SIZE(HDRP(bp)) - DSIZE)
 
-// Given block ptr bp, compute address of next and previous blocks
+// 블록 포인터 bp로부터 다음 블록의 포인터 계산
 #define NEXT_BLKP(bp) ((char *)(bp) + GET_SIZE(((char *)(bp) - WSIZE)))
+
+// 블록 포인터 bp로부터 이전 블록의 포인터 계산
 #define PREV_BLKP(bp) ((char *)(bp) - GET_SIZE(((char *)(bp) - DSIZE)))
 
-#define PRED(bp) (*(void **)(bp))                        // 이전 free block 포인터
-#define SUCC(bp) (*(void **)((char *)(bp) + WSIZE))       // 다음 free block 포인터
+// 가용 리스트(free list)에서 현재 블록 bp의 이전 블록 포인터 접근
+#define PRED(bp) (*(void **)(bp)) 
+
+// 가용 리스트(free list)에서 현재 블록 bp의 다음 블록 포인터 접근
+#define SUCC(bp) (*(void **)((char *)(bp) + WSIZE))
+
+// 메모리 정렬 관련 상수 및 매크로
+#define ALIGNMENT 16 // 16바이트 단위로 정렬 (x86-64 규약 때문)
+
+#define NUM_CLASSES 10 // segregated free list를 위한 크기 클래스 개수
+
+// 주어진 size를 16바이트로 올림 (16의 배수로 맞춤)
+#define ALIGN(size) (((size) + (ALIGNMENT-1)) & ~0xF)
+
+// size_t 자료형을 저장할 때 필요한 공간 크기 (16바이트로 정렬)
+#define SIZE_T_SIZE (ALIGN(sizeof(size_t)))
+
 /*********************************************************
  * NOTE TO STUDENTS: Before you do anything else, please
  * provide your team information in the following struct.
@@ -52,12 +76,6 @@ team_t team = {
     /* Second member's email address (leave blank if none) */
     "minhyay01@gmail.com"};
 
-#define ALIGNMENT 16
-#define NUM_CLASSES 20
-
-#define ALIGN(size) (((size) + (ALIGNMENT-1)) & ~0xF)
-#define SIZE_T_SIZE (ALIGN(sizeof(size_t)))
-
 static void *extend_heap(size_t words);
 static void *find_fit(size_t asize);
 static void place(void *bp, size_t asize);
@@ -68,7 +86,7 @@ static void remove_node(void *bp);
 void *heap_listp;   // 항상 heap의 첫 payload를 가리키는 포인터 (heap base)
 static void *segregated_free_lists[NUM_CLASSES];
 
-// find size class
+// 주어진 크기에 맞는 size class를 반환하는 함수
 static int find_size_class(size_t size) {
     if (size <= 32) return 0;
     else if (size <= 64) return 1;
@@ -81,140 +99,142 @@ static int find_size_class(size_t size) {
     else if (size <= 8192) return 8;
     else return 9;
 }
-//정렬 ver
-static void insert_node(void *bp) {
-    int class_idx = find_size_class(GET_SIZE(HDRP(bp)));
-    void *cur = segregated_free_lists[class_idx];
-    void *prev = NULL;
 
-    while (cur != NULL && GET_SIZE(HDRP(cur)) < GET_SIZE(HDRP(bp))) {
-        prev = cur;
-        cur = SUCC(cur);
-    }
-
-    if (prev == NULL) {
-        // 맨 앞에 삽입
-        segregated_free_lists[class_idx] = bp;
-        PRED(bp) = NULL;
-    } else {
-        SUCC(prev) = bp;
-        PRED(bp) = prev;
-    }
-
-    if (cur != NULL) {
-        PRED(cur) = bp;
-    }
-    SUCC(bp) = cur;
-}
-
+// //정렬 ver
 // static void insert_node(void *bp) {
 //     int class_idx = find_size_class(GET_SIZE(HDRP(bp)));
-    
-//     SUCC(bp) = segregated_free_lists[class_idx];
-//     PRED(bp) = NULL;
-//     if (segregated_free_lists[class_idx] != NULL)
-//         PRED(segregated_free_lists[class_idx]) = bp;
-//     segregated_free_lists[class_idx] = bp;
+//     void *cur = segregated_free_lists[class_idx];
+//     void *prev = NULL;
+
+//     while (cur != NULL && GET_SIZE(HDRP(cur)) < GET_SIZE(HDRP(bp))) {
+//         prev = cur;
+//         cur = SUCC(cur);
+//     }
+
+//     if (prev == NULL) {
+//         // 맨 앞에 삽입
+//         segregated_free_lists[class_idx] = bp;
+//         PRED(bp) = NULL;
+//     } else {
+//         SUCC(prev) = bp;
+//         PRED(bp) = prev;
+//     }
+
+//     if (cur != NULL) {
+//         PRED(cur) = bp;
+//     }
+//     SUCC(bp) = cur;
 // }
 
-// remove node
-static void remove_node(void *bp) {
+// segregated free list에 새 free 블록을 삽입하는 함수 (정렬 X 버전)
+static void insert_node(void *bp) {
     int class_idx = find_size_class(GET_SIZE(HDRP(bp)));
-
-    if (PRED(bp))
-        SUCC(PRED(bp)) = SUCC(bp);
-    else
-        segregated_free_lists[class_idx] = SUCC(bp);
-
-    if (SUCC(bp))
-        PRED(SUCC(bp)) = PRED(bp);
+    
+    SUCC(bp) = segregated_free_lists[class_idx]; // 현재 리스트의 첫 번째 노드를 successor로 설정
+    PRED(bp) = NULL; // predecessor는 NULL
+    if (segregated_free_lists[class_idx] != NULL)
+        PRED(segregated_free_lists[class_idx]) = bp; // 기존 첫 번째 노드가 있으면 그 노드의 predecessor를 bp로 설정
+    segregated_free_lists[class_idx] = bp; // 리스트의 첫 번째에 bp를 삽입
 }
 
+// segregated free list에서 free 블록을 제거하는 함수
+static void remove_node(void *bp) {
+    int class_idx = find_size_class(GET_SIZE(HDRP(bp)));
+    void *prev = PRED(bp);
+    void *succ = SUCC(bp);
 
+    if (prev)
+        SUCC(prev) = succ; // 이전 노드가 있으면, 이전 노드의 successor를 갱신
+    else
+        segregated_free_lists[class_idx] = succ; // 없으면 리스트의 시작 노드를 successor로 변경
 
-// coalesce
-static void *coalesce(void *bp) {
-    bool prev_alloc = GET_ALLOC(HDRP(PREV_BLKP(bp)));
-    bool next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
-    
-    // 만약 현재 bp 바로 다음 블록이 epilogue라면, next_alloc은 당연히 1 (할당된 상태)
-    if (HDRP(NEXT_BLKP(bp)) >= (char *)mem_heap_hi()) {
-        next_alloc = 1;
-    }
-    size_t size = GET_SIZE(HDRP(bp));
+    if (succ)
+        PRED(succ) = prev; // 다음 노드가 있으면, 다음 노드의 predecessor를 갱신
+}
 
-    if (prev_alloc && next_alloc) {
+// 인접한 free 블록들과 병합(coalescing)하는 함수
+static void *coalesce(void *bp)
+{
+    size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(bp)));  // 이전 블록 할당 여부
+    size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));  // 다음 블록 할당 여부
+    size_t size = GET_SIZE(HDRP(bp));                    // 현재 블록 크기
+    void *next = NEXT_BLKP(bp);
+    void *prev = PREV_BLKP(bp);
+
+    if (prev_alloc && next_alloc) { // case 1: 둘 다 할당됨
         insert_node(bp);
         return bp;
     }
-    else if (prev_alloc && !next_alloc) {
-        remove_node(NEXT_BLKP(bp));
-        size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
+    else if (prev_alloc && !next_alloc) { // case 2: 다음 블록만 free
+        remove_node(next);
+        size += GET_SIZE(HDRP(next));
         PUT(HDRP(bp), PACK(size, 0));
         PUT(FTRP(bp), PACK(size, 0));
     }
-    else if (!prev_alloc && next_alloc) {
-        remove_node(PREV_BLKP(bp));
-        size += GET_SIZE(HDRP(PREV_BLKP(bp)));
-        PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
+    else if (!prev_alloc && next_alloc) { // case 3: 이전 블록만 free
+        remove_node(prev);
+        size += GET_SIZE(HDRP(prev));
         PUT(FTRP(bp), PACK(size, 0));
-        bp = PREV_BLKP(bp);
+        PUT(HDRP(prev), PACK(size, 0));
+        bp = prev;
     }
-    else {
-        remove_node(PREV_BLKP(bp));
-        remove_node(NEXT_BLKP(bp));
-        size += GET_SIZE(HDRP(PREV_BLKP(bp))) + GET_SIZE(HDRP(NEXT_BLKP(bp)));
-        PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
-        PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0));
-        bp = PREV_BLKP(bp);
+    else { // case 4: 이전, 다음 모두 free
+        remove_node(prev);
+        remove_node(next);
+        size += GET_SIZE(HDRP(prev)) + GET_SIZE(HDRP(next));
+        PUT(HDRP(prev), PACK(size, 0));
+        PUT(FTRP(next), PACK(size, 0));
+        bp = prev;
     }
     insert_node(bp);
     return bp;
 }
 
+
+// 힙을 words * 4bytes 만큼 확장하고 새 free 블록을 만들어 반환하는 함수
 static void *extend_heap(size_t words)
 {
     char *bp;
     size_t size;
 
-    size = (words % 2) ? (words + 1) * WSIZE : words * WSIZE;
+    size = (words % 2) ? (words + 1) * WSIZE : words * WSIZE; // 짝수 단위로 정렬
     if ((long)(bp = mem_sbrk(size)) == -1)
         return NULL;
 
-    PUT(HDRP(bp), PACK(size, 0));
-    PUT(FTRP(bp), PACK(size, 0));
-    PUT(HDRP(NEXT_BLKP(bp)), PACK(0, 1));
+    PUT(HDRP(bp), PACK(size, 0));            // 새 free 블록 header
+    PUT(FTRP(bp), PACK(size, 0));            // 새 free 블록 footer
+    PUT(HDRP(NEXT_BLKP(bp)), PACK(0, 1));    // 새로운 epilogue header
     return coalesce(bp);
 }
 
+// allocator 초기화 함수
 int mm_init(void)
 {
-    //  1. 힙을 위한 최소 공간 16바이트 확보 (padding + prologue header/footer + epilogue header)
+    // 1. 힙 생성 (초기 padding + prologue header/footer + epilogue header)
     heap_listp = mem_sbrk(4 * WSIZE);
     if (heap_listp == (void *)-1) {
-        return -1;  //  sbrk 실패 시 에러 리턴
+        return -1;
     }
-    //  2. 초기 블록들 구성하는 단계
-    PUT(heap_listp, 0);                                 //  Alignment padding
-    PUT(heap_listp + (1 * WSIZE), PACK(DSIZE, 1));      //  Prologue header (8바이트, 할당됨)
-    PUT(heap_listp + (2 * WSIZE), PACK(DSIZE, 1));      //  Prologue footer
-    PUT(heap_listp + (3 * WSIZE), PACK(0, 1));          //  Epilogue header (0바이트, 할당됨)
 
-    //  3. payload 기준 위치로 이동 (Prologue 블록의 payload 포인터)
-    heap_listp += (2 * WSIZE);
+    PUT(heap_listp, 0);                                 // 패딩
+    PUT(heap_listp + (1 * WSIZE), PACK(DSIZE, 1));       // prologue header
+    PUT(heap_listp + (2 * WSIZE), PACK(DSIZE, 1));       // prologue footer
+    PUT(heap_listp + (3 * WSIZE), PACK(0, 1));           // epilogue header
+
+    heap_listp += (2 * WSIZE); // payload 영역으로 이동
 
     for (int i = 0; i < NUM_CLASSES; i++)
-    segregated_free_lists[i] = NULL;
+        segregated_free_lists[i] = NULL; // segregated list 초기화
 
-    void *bp = extend_heap(CHUNKSIZE/WSIZE);
-    //  4. 살제 usable한 free block 확보
+    void *bp = extend_heap(CHUNKSIZE/WSIZE); // 초기 힙 확장
     if (bp == NULL)
         return -1;
-    if (extend_heap(4) == NULL)   // 자주 사용되는 작은 블럭이 잘 처리되어 점수가 오름
+    if (extend_heap(4) == NULL) // 추가로 작은 블록 확보
         return -1;
 
     return 0;
 }
+
 
 // static void *find_fit(size_t asize) {
 //     for (int i = find_size_class(asize); i < NUM_CLASSES; i++) {
@@ -228,6 +248,7 @@ int mm_init(void)
 //     return NULL;
 // }
 
+// segregated free list에서 크기에 맞는 블록을 찾는 함수 (best-fit 방식)
 static void *find_fit(size_t asize) {
     for (int i = find_size_class(asize); i < NUM_CLASSES; i++) {
         void *bp = segregated_free_lists[i];
@@ -252,26 +273,28 @@ static void *find_fit(size_t asize) {
     return NULL;
 }
 
-// 주어진 위치에 메모리를 배치 (필요 시 분할)
+
+// 메모리 블록을 할당 요청 크기에 맞게 배치하고, 남으면 분할하는 함수
 static void place(void *bp, size_t asize) {
     size_t csize = GET_SIZE(HDRP(bp));
     remove_node(bp);
 
-    if ((csize - asize) >= (2 * DSIZE)) {
+    if ((csize - asize) >= (2 * DSIZE)) { // 남은 크기가 최소 블록 크기 이상이면 분할
         PUT(HDRP(bp), PACK(asize, 1));
         PUT(FTRP(bp), PACK(asize, 1));
 
         void *next_bp = NEXT_BLKP(bp);
         PUT(HDRP(next_bp), PACK(csize - asize, 0));
         PUT(FTRP(next_bp), PACK(csize - asize, 0));
-        insert_node(next_bp);
+        insert_node(next_bp); // 남은 블록은 free list에 다시 삽입
     }
-    else {
+    else { // 남은 크기가 작으면 그냥 통째로 할당
         PUT(HDRP(bp), PACK(csize, 1));
         PUT(FTRP(bp), PACK(csize, 1));
     }
 }
 
+// 메모리 블록을 할당하는 함수
 void *mm_malloc(size_t size)
 {
     size_t asize;
@@ -303,21 +326,20 @@ void *mm_malloc(size_t size)
     return bp;
 }
 
-/*
- * mm_free - Freeing a block does nothing.
- */
+// 메모리 블록을 해제하는 함수
 void mm_free(void *ptr)
 {
     if (ptr == NULL)
         return;
     size_t size = GET_SIZE(HDRP(ptr));
 
-    PUT(HDRP(ptr), PACK(size, 0));
-    PUT(FTRP(ptr), PACK(size, 0));
-    coalesce(ptr);
+    PUT(HDRP(ptr), PACK(size, 0)); // header 수정
+    PUT(FTRP(ptr), PACK(size, 0)); // footer 수정
+    coalesce(ptr); // 병합 시도
 }
 
-/* mm_realloc - in-place 최적화 */
+
+// 메모리 블록을 재할당하는 함수 (in-place 최적화)
 void *mm_realloc(void *ptr, size_t size)
 {
     if (ptr == NULL)
@@ -330,13 +352,11 @@ void *mm_realloc(void *ptr, size_t size)
     size_t oldsize = GET_SIZE(HDRP(ptr));
     size_t asize = (size <= DSIZE) ? (2 * DSIZE) : DSIZE * ((size + (DSIZE) + (DSIZE-1)) / DSIZE);
 
-    // if (asize <= oldsize)
-    //     return ptr;
     if (asize <= oldsize)
-        return ptr;
+        return ptr; // 기존 블록이 충분히 크면 그대로 사용
     
     void *next = NEXT_BLKP(ptr);
-    if (!GET_ALLOC(HDRP(next)) && (oldsize + GET_SIZE(HDRP(next))) >= asize) {
+    if (!GET_ALLOC(HDRP(next)) && (oldsize + GET_SIZE(HDRP(next))) >= asize) { // 다음 블록과 합칠 수 있으면
         remove_node(next);
         size_t newsize = oldsize + GET_SIZE(HDRP(next));
         PUT(HDRP(ptr), PACK(newsize, 1));
@@ -344,6 +364,7 @@ void *mm_realloc(void *ptr, size_t size)
         return ptr;
     }
 
+    // 새 블록 할당 후 데이터 복사
     void *newptr = mm_malloc(size);
     if (newptr == NULL)
         return NULL;
@@ -351,7 +372,7 @@ void *mm_realloc(void *ptr, size_t size)
     size_t copySize = oldsize - DSIZE;
     if (size < copySize)
         copySize = size;
-    memcpy(newptr, ptr, copySize);
-    mm_free(ptr);
+    memcpy(newptr, ptr, copySize); // 데이터 복사
+    mm_free(ptr); // 기존 블록 해제
     return newptr;
 }
